@@ -189,16 +189,38 @@ private[api] object VcfConversions {
     case VcfFieldType.String    => VCFHeaderLineType.String
   }
 
+  private def addToBuffer(add: ((String, Any)) => Unit,
+                          entry: Option[VcfHeaderInfoOrFormatEntry],
+                          key: String,
+                          value: Any,
+                          allowKindMismatch: Boolean = false,
+                          allowExtraFields: Boolean = false): Unit = entry match {
+    case None if allowExtraFields => add(key -> value)
+    case None                     => throw new IllegalStateException(s"Format field $key not described in header.")
+    case Some(hd)                 =>
+      try {
+        toTypedValue(value, hd.kind, hd.count).foreach(v => add(key -> v))
+      } catch {
+        case ex: Exception =>
+          if (allowKindMismatch) add(key -> value)
+          else throw ex
+      }
+  }
+
   /**
     * Converts a [[VariantContext]] and all nested classes into a [[Variant]] and set of [[Genotype]]s.
     *
     * @param in the [[VariantContext]] to be converted
     * @param header the scala [[VcfHeader]] which contains the definitions of all the INFO and FORMAT
     *               fields as well as the ordered list of sample names.
+    * @param allowKindMismatch allow a mismatch between the actual kind and the kind defined in the VCF header
     * @return a [[Variant]] instance that is a copy of the [[VariantContext]] and does not rely on it
     *         post-return
     */
-  def toScalaVariant(in: VariantContext, header: VcfHeader): Variant = try {
+  def toScalaVariant(in: VariantContext,
+                     header: VcfHeader,
+                     allowKindMismatch: Boolean = false,
+                     allowExtraFields: Boolean = false): Variant = try {
     // Build up the allele set
     val ref       = Allele(in.getReference.getDisplayString)
     val alts      = in.getAlternateAlleles.map(a => Allele(a.getDisplayString)).toIndexedSeq
@@ -216,12 +238,14 @@ private[api] object VcfConversions {
         if (g.hasPL) buffer.append("PL" -> g.getPL.toIndexedSeq)
 
         g.getExtendedAttributes.keySet().foreach { key =>
-          val value = g.getExtendedAttribute(key)
-
-          header.format.get(key) match {
-            case Some(hd) => toTypedValue(value, hd.kind, hd.count).foreach(v => buffer.append(key -> v))
-            case None     => throw new IllegalStateException(s"Format field $key not described in header.")
-          }
+          addToBuffer(
+            add    = buffer.addOne,
+            entry  = header.format.get(key),
+            key    = key,
+            value  = g.getExtendedAttribute(key),
+            allowKindMismatch = allowKindMismatch,
+            allowExtraFields  = allowExtraFields
+          )
         }
 
         buffer.toMap
@@ -234,12 +258,14 @@ private[api] object VcfConversions {
     val info = {
       val buffer = IndexedSeq.newBuilder[(String,Any)]
       in.getAttributes.entrySet().foreach { entry =>
-        val key   = entry.getKey
-        val value = entry.getValue
-        header.info.get(key) match {
-          case Some(hd) => toTypedValue(value, hd.kind, hd.count).foreach(v => buffer += (key -> v))
-          case None     => throw new IllegalStateException(s"INFO field $key not described in header.")
-        }
+        addToBuffer(
+          add    = buffer.addOne,
+          entry  = header.info.get(entry.getKey),
+          key    = entry.getKey,
+          value  = entry.getValue,
+          allowKindMismatch = allowKindMismatch,
+          allowExtraFields  = allowExtraFields
+        )
       }
 
       buffer.result()
