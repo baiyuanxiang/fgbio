@@ -198,12 +198,13 @@ private[api] object VcfConversions {
     case None if allowExtraFields => add(key -> value)
     case None                     => throw new IllegalStateException(s"Format field $key not described in header.")
     case Some(hd)                 =>
-      try {
-        toTypedValue(value, hd.kind, hd.count).foreach(v => add(key -> v))
-      } catch {
-        case ex: Exception =>
-          if (allowKindMismatch) add(key -> value)
-          else throw ex
+      if (!allowKindMismatch) toTypedValue(value, hd.kind, hd.count).foreach(v => add(key -> v))
+      else {
+        try {
+          toTypedValue(value, hd.kind, hd.count).foreach(v => add(key -> v))
+        } catch {
+          case _: Exception => add(key -> value)
+        }
       }
   }
 

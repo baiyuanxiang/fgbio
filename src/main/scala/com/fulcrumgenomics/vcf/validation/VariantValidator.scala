@@ -32,8 +32,11 @@ import com.fulcrumgenomics.vcf.validation.ValidationResult._
 import scala.collection.immutable.ArraySeq
 import scala.collection.mutable.ListBuffer
 
-sealed trait VariantValidator extends VcfValidator {
+trait VariantValidator extends VcfValidator {
   import Variant.{FlagValue, Missing, MissingChar, MissingFloat, MissingInt}
+
+  def validate(variant: Variant): Seq[ValidationResult]
+
   private def toKind(value: Any): Seq[VcfFieldType] = value match {
     case arr: ArrayAttr[_]               => arr.flatMap(toKind)
     case arr: ArraySeq[_]                => arr.flatMap(toKind)
@@ -100,11 +103,10 @@ sealed trait VariantValidator extends VcfValidator {
   }
 }
 
+
+
 object VariantValidator {
-
-
   val VariantInfoValidators  : Seq[VariantInfoValidator]   = ReservedVcfInfoHeaders.map(VariantInfoValidator.apply)
-  val VariantFormatValidators: Seq[VariantFormatValidator] = ReservedVcfFormatHeaders.map(VariantFormatValidator.apply)
 
   case class VariantInfoValidator(info: VcfInfoHeader) extends VariantValidator {
     def validate(variant: Variant): Seq[ValidationResult] = {
@@ -114,15 +116,16 @@ object VariantValidator {
     }
   }
 
-  case class VariantFormatValidator(format: VcfFormatHeader) extends VariantValidator {
-    def validate(variant: Variant, genotype: Genotype): Seq[ValidationResult] = {
-      genotype.get[Any](format.id).toIndexedSeq.flatMap { value =>
-        this.validate(kind=format.kind, count=format.count, variant=variant, genotype=Some(genotype), source=s"FORMAT.${format.id}", value=value)
-      }
+  case class VariantInfoExtraFieldValidator(infoKeys: Set[String]) extends VariantValidator {
+    def validate(variant: Variant): Seq[ValidationResult] = {
+      variant.attrs.keys
+        .filterNot(infoKeys.contains)
+        .map { id =>
+          error(s"INFO.$id found in record but missing in header", variant = variant)
+        }.toIndexedSeq
     }
   }
 }
-
 
 // TODO: validators across variants (ex. spanning alleles), or across genotypes (phase set)
 sealed trait VariantsValidator {

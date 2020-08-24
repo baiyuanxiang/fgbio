@@ -32,9 +32,11 @@ import com.fulcrumgenomics.sopt.{arg, clp}
 import com.fulcrumgenomics.util.Io
 import com.fulcrumgenomics.vcf.api.VcfHeader._
 import com.fulcrumgenomics.vcf.api._
-import com.fulcrumgenomics.vcf.validation.ValidationResult._
-import com.fulcrumgenomics.vcf.validation.VariantValidator.{VariantFormatValidator, VariantInfoValidator}
-import com.fulcrumgenomics.vcf.validation.{ValidationResult, VcfHeaderValidator, _}
+import com.fulcrumgenomics.vcf.validation.GenotypeValidator.{PhaseSetGenotypeValidator, VariantFormatExtraFieldValidator, VariantFormatValidator}
+import com.fulcrumgenomics.vcf.validation.VariantValidator.{VariantInfoExtraFieldValidator, VariantInfoValidator}
+import com.fulcrumgenomics.vcf.validation.{ValidationResult, VariantValidator, VcfHeaderValidator, _}
+
+import scala.collection.mutable.ArrayBuffer
 
 @clp(group=ClpGroups.VcfOrBcf, description=
   """
@@ -43,8 +45,7 @@ import com.fulcrumgenomics.vcf.validation.{ValidationResult, VcfHeaderValidator,
     |# Header
     |
     |Errors if:
-    |- Reserved INFO/FORMAT lines are have the proper type and count
-    |- Duplicate INFO/FORMAT identifiers are found
+    |- Reserved INFO/FORMAT lines do not have the proper type and count
     |- Duplicate contig names are found
     |
     |Warns if:
@@ -62,6 +63,9 @@ import com.fulcrumgenomics.vcf.validation.{ValidationResult, VcfHeaderValidator,
     |# Future work
     |
     |Validate:
+    |- genomic coordinate sorted
+    |- ID values
+    |- FILTER values
     |- values for specific fields (ex. CIGAR)
     |- values across variants (ex. phase set, spanning alleles)
     |- across fields (ex. allele depth vs allele frequency, allele depth vs forward/reverse allele dpeth)
@@ -86,6 +90,35 @@ class ValidateVcf
   private val levelCounter: SimpleCounter[LogLevel] = new SimpleCounter[LogLevel]()
   private val messageCounter: SimpleCounter[String] = new SimpleCounter[String]()
 
+  override def execute(): Unit = {
+    Logger.level = this.level
+
+    // Validate the VCF header
+    val reader                = VcfSource(path=input, allowKindMismatch=allowTypeMismatch, allowExtraFields=allowExtraFields)
+    val headerValidators      = VcfHeaderValidator.Validators
+    val headerEntryValidators = VcfHeaderEntryValidator.ReservedVcfHeaderEntryValidators
+    headerValidators.foreach { validator => validator.validate(header=reader.header).process() }
+    reader.header.entries.foreach { entry =>
+      headerEntryValidators.foreach { validator =>
+        validator.validate(entry=entry).process()
+      }
+    }
+
+    // Validate the variants
+    val variantValidators = this.getVariantValidators(header=reader.header)
+    val iter              = examineFirstN match {
+      case None    => reader.view
+      case Some(n) => reader.take(n)
+    }
+    iter.foreach { variant: Variant =>
+      variantValidators.foreach(_.validate(variant=variant).process())
+    }
+    reader.safelyClose
+
+    // Summarize and log errors
+    finish()
+  }
+
   private implicit class ProcessValidationResults(results: Seq[ValidationResult]) {
     def process(): Unit = results.foreach { result =>
       val newResult = new ProcessValidationResult(result=result)
@@ -104,69 +137,7 @@ class ValidateVcf
     }
   }
 
-  override def execute(): Unit = {
-    Logger.level = this.level
-
-    // Validate the VCF header
-    val reader                = VcfSource(path=input, allowKindMismatch=allowTypeMismatch, allowExtraFields=allowExtraFields)
-    val headerValidators      = VcfHeaderValidator.Validators
-    val headerEntryValidators = VcfHeaderEntryValidator.ReservedVcfHeaderEntryValidators
-    headerValidators.foreach { validator => validator.validate(header=reader.header).process() }
-    reader.header.entries.foreach { entry =>
-      headerEntryValidators.foreach { validator =>
-        validator.validate(entry=entry).process()
-      }
-    }
-
-    val infoKeys   = reader.header.info.keySet
-    val formatKeys = reader.header.format.keySet
-
-    // Validate the variants
-    val variantInfoFormatValidators = {
-      val reservedInfoIds = ReservedVcfInfoHeaders.map(_.id).toSet
-      VariantValidator.VariantInfoValidators ++ reader
-        .header
-        .infos
-        .filterNot(info => reservedInfoIds.contains(info.id))
-        .map(info => VariantInfoValidator(info=info))
-    }
-
-    val variantFormatFormatValidators = {
-      val reservedFormatIds = ReservedVcfFormatHeaders.map(_.id).toSet
-      VariantValidator.VariantFormatValidators ++ reader
-        .header
-        .formats
-        .filterNot(format => reservedFormatIds.contains(format.id))
-        .map(format => VariantFormatValidator(format=format))
-    }
-    val iter = examineFirstN match {
-      case None    => reader.view
-      case Some(n) => reader.take(n)
-    }
-    iter.foreach { variant: Variant =>
-      // INFO
-      variantInfoFormatValidators.foreach { validator =>
-        validator.validate(variant=variant).process()
-      }
-      // check for INFO values not described in the header
-      variant.attrs.keys.filterNot(infoKeys.contains).foreach { id =>
-        error(s"INFO.$id found in record but missing in header", variant=variant)
-      }
-
-      // FORMAT
-      variant.genotypes.foreach { case (_, genotype) =>
-        variantFormatFormatValidators.foreach { validator =>
-          validator.validate(variant=variant, genotype=genotype).process()
-        }
-      }
-      // check for FORMAT values not described in the header
-      variant.genotypes.flatMap { case (_, genotype) => genotype.attrs.keySet }.toSeq.distinct.filterNot(formatKeys.contains).foreach { id: String =>
-        error(s"FORMAT.$id found in record but missing in header", variant=variant).process()
-      }
-    }
-
-    reader.safelyClose
-
+  private def finish(): Unit = {
     if (summarizeMessages) {
       messageCounter.foreach { case (message, count) =>
         val extra = if (count > 1) "s" else ""
@@ -178,6 +149,41 @@ class ValidateVcf
       val extra = if (count > 1) "s" else ""
       logger.info(f"Found $count%,d at $level$extra")
     }
+  }
+
+  private def getVariantValidators(header: VcfHeader): Seq[VariantValidator] = {
+    val buffer            = ArrayBuffer[VariantValidator]()
+    val reservedInfoIds   = ReservedVcfInfoHeaders.map(_.id).toSet
+    val reservedFormatIds = ReservedVcfFormatHeaders.map(_.id).toSet
+    val infoKeys          = header.info.keySet
+    val formatKeys        = header.format.keySet
+
+    // Reserved INFO validators
+    buffer ++= VariantValidator.VariantInfoValidators
+
+    // Validators from INFOs defined in the header
+    buffer ++= header.infos
+      .filterNot(info => reservedInfoIds.contains(info.id))
+      .map(info => VariantInfoValidator(info=info))
+
+    // INFO fields in the record not in the header
+    buffer += VariantInfoExtraFieldValidator(infoKeys)
+
+    // Reserved FORMAT validators
+    buffer ++= GenotypeValidator.VariantFormatValidators
+
+    // Validators from FORMATs defined in the header
+    buffer ++= header.formats
+      .filterNot(format => reservedFormatIds.contains(format.id))
+      .map(format => VariantFormatValidator(format=format))
+
+    // Custom FORMAT validators
+    buffer += PhaseSetGenotypeValidator
+
+    // FORMAT fields in the record not in the header
+    buffer += VariantFormatExtraFieldValidator(formatKeys)
+
+    buffer.toIndexedSeq
   }
 }
 
