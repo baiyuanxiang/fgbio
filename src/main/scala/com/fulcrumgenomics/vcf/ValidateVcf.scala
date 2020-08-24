@@ -29,7 +29,7 @@ import com.fulcrumgenomics.FgBioDef.{PathToVcf, SafelyClosable}
 import com.fulcrumgenomics.cmdline.{ClpGroups, FgBioTool}
 import com.fulcrumgenomics.commons.util.{LazyLogging, LogLevel, Logger, SimpleCounter}
 import com.fulcrumgenomics.sopt.{arg, clp}
-import com.fulcrumgenomics.util.Io
+import com.fulcrumgenomics.util.{Io, ProgressLogger}
 import com.fulcrumgenomics.vcf.api.VcfHeader._
 import com.fulcrumgenomics.vcf.api._
 import com.fulcrumgenomics.vcf.validation.GenotypeValidator.{PhaseSetGenotypeValidator, VariantFormatExtraFieldValidator, VariantFormatValidator}
@@ -93,6 +93,8 @@ class ValidateVcf
   override def execute(): Unit = {
     Logger.level = this.level
 
+    val progress = new ProgressLogger(logger=logger, noun="variants", verb="examined", unit=100000)
+
     // Validate the VCF header
     val reader                = VcfSource(path=input, allowKindMismatch=allowTypeMismatch, allowExtraFields=allowExtraFields)
     val headerValidators      = VcfHeaderValidator.Validators
@@ -111,8 +113,10 @@ class ValidateVcf
       case Some(n) => reader.take(n)
     }
     iter.foreach { variant: Variant =>
+      progress.record(variant=variant)
       variantValidators.foreach(_.validate(variant=variant).process())
     }
+    progress.logLast()
     reader.safelyClose
 
     // Summarize and log errors

@@ -62,18 +62,18 @@ object ValidationResult {
   def info(message: String, variant: Option[Variant] = None, genotype: Option[Genotype] = None): ValidationResult = {
     ValidationResult(variant=variant, message=message, genotype=genotype, level=LogLevel.Info)
   }
-  def info(message: String, variant: Variant): ValidationResult = debug(message=message, variant=Some(variant))
-  def info(message: String, variant: Variant, genotype: Genotype): ValidationResult = debug(message=message, variant=Some(variant), genotype=Some(genotype))
+  def info(message: String, variant: Variant): ValidationResult = info(message=message, variant=Some(variant))
+  def info(message: String, variant: Variant, genotype: Genotype): ValidationResult = info(message=message, variant=Some(variant), genotype=Some(genotype))
 
   def warning(message: String, variant: Option[Variant] = None, genotype: Option[Genotype] = None): ValidationResult = {
     ValidationResult(variant=variant, message=message, genotype=genotype, level=LogLevel.Warning)
   }
-  def warning(message: String, variant: Variant): ValidationResult = debug(message=message, variant=Some(variant))
-  def warning(message: String, variant: Variant, genotype: Genotype): ValidationResult = debug(message=message, variant=Some(variant), genotype=Some(genotype))
+  def warning(message: String, variant: Variant): ValidationResult = warning(message=message, variant=Some(variant))
+  def warning(message: String, variant: Variant, genotype: Genotype): ValidationResult = warning(message=message, variant=Some(variant), genotype=Some(genotype))
 
   def error(message: String, variant: Option[Variant] = None, genotype: Option[Genotype] = None): ValidationResult = {
     ValidationResult(variant=variant, message=message, genotype=genotype, level=LogLevel.Error)
   }
-  def error(message: String, variant: Variant): ValidationResult = debug(message=message, variant=Some(variant))
-  def error(message: String, variant: Variant, genotype: Genotype): ValidationResult = debug(message=message, variant=Some(variant), genotype=Some(genotype))
+  def error(message: String, variant: Variant): ValidationResult = error(message=message, variant=Some(variant))
+  def error(message: String, variant: Variant, genotype: Genotype): ValidationResult = error(message=message, variant=Some(variant), genotype=Some(genotype))
 }
